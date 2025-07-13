@@ -1,14 +1,16 @@
 # Pokemon API Proxy
 
-A high-performance Rust web service that proxies the [PokéAPI](https://pokeapi.co/) with built-in caching and improved error handling. Built with Axum framework for blazing-fast async performance.
+A high-performance Rust web service that acts as a **transparent proxy** for the [PokéAPI](https://pokeapi.co/) with built-in caching and improved error handling. Built with Axum framework for blazing-fast async performance.
 
 ## 🚀 Features
 
-- **Fast HTTP Proxy**: Efficient proxying of PokéAPI requests
-- **In-Memory Caching**: Reduces API calls and improves response times
+- **Transparent Proxy**: Proxies **any** PokéAPI endpoint without modification
+- **Universal Wildcard Routing**: Supports all PokéAPI endpoints (`/pokemon/*`, `/type/*`, `/pokemon-species/*`, etc.)
+- **Raw JSON Caching**: Stores response data as-is without deserialization for maximum performance
+- **In-Memory Caching**: Reduces API calls and improves response times dramatically
 - **Random Pokemon Endpoint**: Get a random Pokemon (ID 1-1025)
 - **Robust Error Handling**: Comprehensive error handling with detailed logging
-- **Structured Logging**: Uses `tracing` for observability
+- **Structured Logging**: Uses `tracing` for observability and debugging
 - **Configuration-Driven**: TOML-based configuration
 - **Thread-Safe**: Built for concurrent request handling
 
@@ -60,6 +62,26 @@ GET /pokemon/{id}
 curl http://localhost:3000/pokemon/25
 ```
 
+### Get Pokemon Species
+```http
+GET /pokemon-species/{id}
+```
+
+**Example:**
+```bash
+curl http://localhost:3000/pokemon-species/25
+```
+
+### Get Pokemon Types
+```http
+GET /type/{id}
+```
+
+**Example:**
+```bash
+curl http://localhost:3000/type/1
+```
+
 ### Get Random Pokemon
 ```http
 GET /random
@@ -71,6 +93,20 @@ curl http://localhost:3000/random
 ```
 
 Returns a random Pokemon from the first 1025 Pokemon.
+
+### Universal Proxy Support
+
+The service supports **any** PokéAPI endpoint through wildcard routing:
+
+```bash
+curl http://localhost:3000/pokemon/25/encounters
+curl http://localhost:3000/ability/1
+curl http://localhost:3000/move/1
+curl http://localhost:3000/item/1
+curl http://localhost:3000/generation/1
+curl http://localhost:3000/region/1
+# ... and many more!
+```
 
 ## ⚙️ Configuration
 
@@ -168,6 +204,10 @@ All errors return appropriate HTTP status codes:
 - **`INFO`**: Server startup events
 - **`WARN`**: Non-critical failures (cache issues)
 - **`ERROR`**: Critical errors affecting functionality
+
+### Structured Logging
+
+The service now supports **structured JSON logging** for enhanced observability and debugging. Logs are emitted in JSON format, making it easier to integrate with log aggregation tools and monitor service behavior.
 
 ### Production Build
 

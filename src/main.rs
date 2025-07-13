@@ -1,16 +1,16 @@
 mod config;
-mod pokemon;
 mod cache;
 
 use axum::{
-    Json, Router, debug_handler,
+    body::Body,
     extract::{Path, State},
     http::StatusCode,
+    response::Response,
     routing::get,
+    Router,
 };
 use cache::{CacheTrait, InmemoryCache};
 use config::Config;
-use pokemon::Pokemon;
 use rand;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -50,8 +50,9 @@ impl From<toml::de::Error> for AppError {
 }
 
 struct AppState {
-    cache: Arc<dyn CacheTrait<Pokemon>>,
+    cache: Arc<dyn CacheTrait<String>>,
     config: Config,
+    client: reqwest::Client,
 }
 
 fn load_config() -> Result<Config, AppError> {
@@ -63,11 +64,11 @@ fn load_config() -> Result<Config, AppError> {
         })
 }
 
-async fn get_pokemon(api_url: String, id: u32) -> Result<Pokemon, AppError> {
-    let url = format!("{}/pokemon/{}", api_url, id);
-    tracing::debug!("Fetching Pokemon from URL: {}", url);
+async fn proxy_pokemon_api(client: &reqwest::Client, api_url: &str, path: &str) -> Result<String, AppError> {
+    let url = format!("{}{}", api_url, path);
+    tracing::debug!("Proxying request to URL: {}", url);
     
-    let response = reqwest::get(&url).await
+    let response = client.get(&url).send().await
         .map_err(|e| {
             tracing::error!("Failed to make HTTP request to {}: {}", url, e);
             AppError::from(e)
@@ -80,14 +81,14 @@ async fn get_pokemon(api_url: String, id: u32) -> Result<Pokemon, AppError> {
         return Err(AppError::NetworkError(error_msg));
     }
     
-    let pokemon = response.json::<Pokemon>().await
+    let response_body = response.text().await
         .map_err(|e| {
-            tracing::error!("Failed to parse JSON response from {}: {}", url, e);
-            AppError::ParseError(format!("JSON parsing failed: {}", e))
+            tracing::error!("Failed to read response body from {}: {}", url, e);
+            AppError::ParseError(format!("Failed to read response: {}", e))
         })?;
     
-    tracing::debug!("Successfully fetched Pokemon: {} (ID: {})", pokemon.name, pokemon.id);
-    Ok(pokemon)
+    tracing::debug!("Successfully fetched data from: {}", url);
+    Ok(response_body)
 }
 
 #[tokio::main]
@@ -104,7 +105,7 @@ async fn main() {
                 .into()
             }),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().json())
         .init();
 
     let config = match load_config() {
@@ -116,17 +117,29 @@ async fn main() {
     };
     
     // Initialize cache with configuration
-    let inmemory_cache: InmemoryCache<Pokemon> = InmemoryCache::new(config.cache.clone());
+    let inmemory_cache: InmemoryCache<String> = InmemoryCache::new(config.cache.clone());
+    
+    // Create HTTP client
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(config.pokemon.timeout as u64))
+        .build()
+        .map_err(|e| {
+            tracing::error!("Failed to create HTTP client: {}", e);
+            std::process::exit(1);
+        })
+        .unwrap();
+    
     let state = AppState {
         cache: Arc::new(inmemory_cache),
         config,
+        client,
     };
 
     let app_state = Arc::new(state);
 
     let app = Router::new()
         .route("/random", get(get_random_pokemon_handler))
-        .route("/pokemon/{id}", get(get_pokemon_handler))
+        .route("/{*path}", get(proxy_handler))
         .with_state(app_state);
 
     let listener = match tokio::net::TcpListener::bind("0.0.0.0:3000").await {
@@ -145,62 +158,87 @@ async fn main() {
     }
 }
 
-#[debug_handler]
 async fn get_random_pokemon_handler(
     State(app_state): State<Arc<AppState>>,
-) -> (StatusCode, Json<Pokemon>) {
+) -> Response {
     let random_pokemon: u32 = rand::random_range(1..=1025);
+    let path = format!("/pokemon/{}", random_pokemon);
 
-    if let Some(pokemon) = app_state.cache.get(&random_pokemon.to_string()) {
-        tracing::debug!("Cache hit for Pokémon ID: {}", random_pokemon);
-        return (StatusCode::OK, Json(pokemon));
+    if let Some(cached_response) = app_state.cache.get(&path) {
+        tracing::debug!("Cache hit for path: {}", path);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(cached_response))
+            .unwrap();
     }
     
-    let api_url = app_state.config.pokemon.api_url.to_string();
-    tracing::debug!("Cache miss for Pokémon ID: {}, fetching from API", random_pokemon);
+    let api_url = &app_state.config.pokemon.api_url;
+    tracing::debug!("Cache miss for path: {}, fetching from API", path);
 
-    match get_pokemon(api_url, random_pokemon).await {
-        Ok(pokemon) => {
-            tracing::debug!("Successfully fetched Pokémon ID: {}", random_pokemon);
+    match proxy_pokemon_api(&app_state.client, api_url, &path).await {
+        Ok(response_body) => {
+            tracing::debug!("Successfully fetched data for path: {}", path);
             if let Err(e) = app_state
                 .cache
-                .insert(random_pokemon.to_string(), pokemon.clone())
+                .insert(path.clone(), response_body.clone())
             {
-                tracing::warn!("Failed to cache Pokémon ID {}: {}", random_pokemon, e);
+                tracing::warn!("Failed to cache response for path {}: {}", path, e);
             }
-            (StatusCode::OK, Json(pokemon))
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(response_body))
+                .unwrap()
         }
         Err(e) => {
-            tracing::error!("Failed to fetch Pokémon ID {}: {}", random_pokemon, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(Pokemon::default()))
+            tracing::error!("Failed to fetch data for path {}: {}", path, e);
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"error": "Internal server error"}"#))
+                .unwrap()
         }
     }
 }
 
-#[debug_handler]
-async fn get_pokemon_handler(
+async fn proxy_handler(
     State(app_state): State<Arc<AppState>>,
-    Path(id): Path<u32>,
-) -> (StatusCode, Json<Pokemon>) {
-    if let Some(pokemon) = app_state.cache.get(&id.to_string()) {
-        tracing::debug!("Cache hit for Pokémon ID: {}", id);
-        return (StatusCode::OK, Json(pokemon));
+    Path(path): Path<String>,
+) -> Response {
+    let full_path = format!("/{}", path);
+    
+    if let Some(cached_response) = app_state.cache.get(&full_path) {
+        tracing::debug!("Cache hit for path: {}", full_path);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(cached_response))
+            .unwrap();
     }
 
-    let api_url = app_state.config.pokemon.api_url.to_string();
-    tracing::debug!("Cache miss for Pokémon ID: {}, fetching from API", id);
+    let api_url = &app_state.config.pokemon.api_url;
+    tracing::debug!("Cache miss for path: {}, fetching from API", full_path);
 
-    match get_pokemon(api_url, id).await {
-        Ok(pokemon) => {
-            tracing::debug!("Successfully fetched Pokémon ID: {}", id);
-            if let Err(e) = app_state.cache.insert(id.to_string(), pokemon.clone()) {
-                tracing::warn!("Failed to cache Pokémon ID {}: {}", id, e);
+    match proxy_pokemon_api(&app_state.client, api_url, &full_path).await {
+        Ok(response_body) => {
+            tracing::debug!("Successfully fetched data for path: {}", full_path);
+            if let Err(e) = app_state.cache.insert(full_path.clone(), response_body.clone()) {
+                tracing::warn!("Failed to cache response for path {}: {}", full_path, e);
             }
-            (StatusCode::OK, Json(pokemon))
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(response_body))
+                .unwrap()
         }
         Err(e) => {
-            tracing::error!("Failed to fetch Pokémon ID {}: {}", id, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(Pokemon::default()))
+            tracing::error!("Failed to fetch data for path {}: {}", full_path, e);
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"error": "Internal server error"}"#))
+                .unwrap()
         }
     }
 }

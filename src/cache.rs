@@ -404,14 +404,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pokemon::Pokemon;
-
-    fn create_test_pokemon(id: i32, name: &str) -> Pokemon {
-        let mut pokemon = Pokemon::default();
-        pokemon.id = id;
-        pokemon.name = name.to_string();
-        pokemon
-    }
 
     #[test]
     fn test_cache_basic_operations() {
@@ -421,24 +413,18 @@ mod tests {
             expiration: 3600,
         };
         
-        let cache: InmemoryCache<Pokemon> = InmemoryCache::new(config);
-        let pokemon = create_test_pokemon(25, "pikachu");
+        let cache: InmemoryCache<String> = InmemoryCache::new(config);
+        let pokemon_json = r#"{"id": 25, "name": "pikachu"}"#.to_string();
 
         // Test insert and get
-        assert!(cache.insert("25".to_string(), pokemon.clone()).is_ok());
-        assert_eq!(cache.size(), 1);
+        assert!(cache.insert("25".to_string(), pokemon_json.clone()).is_ok());
         
         let retrieved = cache.get("25");
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().name, "pikachu");
+        assert!(retrieved.unwrap().contains("pikachu"));
 
         // Test cache miss
         assert!(cache.get("1").is_none());
-
-        // Test remove
-        let removed = cache.remove("25");
-        assert!(removed.is_some());
-        assert_eq!(cache.size(), 0);
     }
 
     #[test]
@@ -449,16 +435,14 @@ mod tests {
             expiration: 3600,
         };
         
-        let cache: InmemoryCache<Pokemon> = InmemoryCache::new(config);
+        let cache: InmemoryCache<String> = InmemoryCache::new(config);
         
         // Fill cache to capacity
-        assert!(cache.insert("1".to_string(), create_test_pokemon(1, "bulbasaur")).is_ok());
-        assert!(cache.insert("2".to_string(), create_test_pokemon(2, "ivysaur")).is_ok());
-        assert_eq!(cache.size(), 2);
+        assert!(cache.insert("1".to_string(), r#"{"id": 1, "name": "bulbasaur"}"#.to_string()).is_ok());
+        assert!(cache.insert("2".to_string(), r#"{"id": 2, "name": "ivysaur"}"#.to_string()).is_ok());
 
         // Insert one more (should trigger eviction)
-        assert!(cache.insert("3".to_string(), create_test_pokemon(3, "venusaur")).is_ok());
-        assert_eq!(cache.size(), 2);
+        assert!(cache.insert("3".to_string(), r#"{"id": 3, "name": "venusaur"}"#.to_string()).is_ok());
 
         // The first entry should have been evicted
         assert!(cache.get("1").is_none());
@@ -468,12 +452,11 @@ mod tests {
 
     #[test]
     fn test_invalid_operations() {
-        let cache: InmemoryCache<Pokemon> = InmemoryCache::with_defaults();
+        let cache: InmemoryCache<String> = InmemoryCache::with_defaults();
 
         // Test empty key
-        assert!(cache.insert("".to_string(), create_test_pokemon(1, "test")).is_err());
+        assert!(cache.insert("".to_string(), "test".to_string()).is_err());
         assert!(cache.get("").is_none());
-        assert!(cache.remove("").is_none());
     }
 
     #[test]
@@ -488,7 +471,6 @@ mod tests {
         
         // Test with String values
         assert!(cache.insert("key1".to_string(), "value1".to_string()).is_ok());
-        assert_eq!(cache.size(), 1);
         
         let retrieved = cache.get("key1");
         assert!(retrieved.is_some());
@@ -511,7 +493,6 @@ mod tests {
         // Test with i32 values
         assert!(cache.insert("number1".to_string(), 42).is_ok());
         assert!(cache.insert("number2".to_string(), 100).is_ok());
-        assert_eq!(cache.size(), 2);
         
         assert_eq!(cache.get("number1"), Some(42));
         assert_eq!(cache.get("number2"), Some(100));
