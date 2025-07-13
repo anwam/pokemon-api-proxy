@@ -1,0 +1,9 @@
+[pokemon]
+api_url = "https://pokeapi.co/api/v2"
+timeout = 30
+cache_enabled = true
+
+[cache]
+type = "memory"
+max_size = 1000
+expiration = 3600
