@@ -1,5 +1,6 @@
 mod config;
 mod pokemon;
+mod cache;
 
 use axum::{
     Json, Router, debug_handler,
@@ -7,11 +8,11 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
+use cache::{CacheTrait, InmemoryCache};
 use config::Config;
 use pokemon::Pokemon;
 use rand;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Custom error types for better error handling
@@ -49,57 +50,8 @@ impl From<toml::de::Error> for AppError {
 }
 
 struct AppState {
-    cache: Arc<dyn CacheTrait>,
+    cache: Arc<dyn CacheTrait<Pokemon>>,
     config: Config,
-}
-
-#[derive(Default)]
-struct InmemoryCache {
-    store: Arc<Mutex<HashMap<String, Pokemon>>>,
-}
-
-trait CacheTrait: Send + Sync {
-    fn get(&self, key: String) -> Option<Pokemon>;
-    fn insert(&self, key: String, value: Pokemon) -> Result<(), AppError>;
-}
-
-impl CacheTrait for InmemoryCache {
-    fn get(&self, key: String) -> Option<Pokemon> {
-        match self.store.lock() {
-            Ok(store) => {
-                let result = store.get(key.as_str()).cloned();
-                if result.is_some() {
-                    tracing::debug!("Cache hit for key: {}", key);
-                } else {
-                    tracing::debug!("Cache miss for key: {}", key);
-                }
-                result
-            }
-            Err(e) => {
-                tracing::error!("Failed to acquire cache read lock for key {}: {}", key, e);
-                None
-            }
-        }
-    }
-
-    fn insert(&self, key: String, value: Pokemon) -> Result<(), AppError> {
-        match self.store.lock() {
-            Ok(mut store) => {
-                let was_present = store.insert(key.clone(), value).is_some();
-                if was_present {
-                    tracing::debug!("Updated existing Pokémon in cache: {}", key);
-                } else {
-                    tracing::debug!("Inserted new Pokémon into cache: {}", key);
-                }
-                Ok(())
-            }
-            Err(e) => {
-                let error_msg = format!("Failed to acquire cache write lock: {}", e);
-                tracing::error!("{}", error_msg);
-                Err(AppError::CacheError(error_msg))
-            }
-        }
-    }
 }
 
 fn load_config() -> Result<Config, AppError> {
@@ -163,7 +115,8 @@ async fn main() {
         }
     };
     
-    let inmemory_cache = InmemoryCache::default();
+    // Initialize cache with configuration
+    let inmemory_cache: InmemoryCache<Pokemon> = InmemoryCache::new(config.cache.clone());
     let state = AppState {
         cache: Arc::new(inmemory_cache),
         config,
@@ -198,7 +151,7 @@ async fn get_random_pokemon_handler(
 ) -> (StatusCode, Json<Pokemon>) {
     let random_pokemon: u32 = rand::random_range(1..=1025);
 
-    if let Some(pokemon) = app_state.cache.get(random_pokemon.to_string()) {
+    if let Some(pokemon) = app_state.cache.get(&random_pokemon.to_string()) {
         tracing::debug!("Cache hit for Pokémon ID: {}", random_pokemon);
         return (StatusCode::OK, Json(pokemon));
     }
@@ -229,7 +182,7 @@ async fn get_pokemon_handler(
     State(app_state): State<Arc<AppState>>,
     Path(id): Path<u32>,
 ) -> (StatusCode, Json<Pokemon>) {
-    if let Some(pokemon) = app_state.cache.get(id.to_string()) {
+    if let Some(pokemon) = app_state.cache.get(&id.to_string()) {
         tracing::debug!("Cache hit for Pokémon ID: {}", id);
         return (StatusCode::OK, Json(pokemon));
     }

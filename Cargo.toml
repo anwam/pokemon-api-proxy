@@ -3,6 +3,14 @@ name = "pokemon-api-proxy"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "pokemon_api_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pokemon-api-proxy"
+path = "src/main.rs"
+
 [dependencies]
 axum = { version = "0.8.4", features = ["tracing", "macros"] }
 rand = "0.9.1"
